@@ -11,6 +11,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore folders
+        run: |
+          for f in *__*; do
+            [ -f "$f" ] || continue
+            p="${f//__//}"
+            mkdir -p "$(dirname "$p")"
+            mv "$f" "$p"
+          done
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
