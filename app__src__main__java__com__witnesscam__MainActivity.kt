@@ -24,6 +24,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import android.util.Size
+import android.view.Surface
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -32,6 +33,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraEffect
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
@@ -272,6 +274,7 @@ fun RecordScreen(bottomInset: Dp, onRecording: (Boolean) -> Unit) {
     var fix by remember { mutableStateOf<Fix?>(null) }
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     var vc by remember { mutableStateOf<VideoCapture<Recorder>?>(null) }
+    var camInfo by remember { mutableStateOf<CameraInfo?>(null) }
     var active by remember { mutableStateOf<Recording?>(null) }
     var seconds by remember { mutableIntStateOf(0) }
     var startMs by remember { mutableLongStateOf(0L) }
@@ -335,7 +338,7 @@ fun RecordScreen(bottomInset: Dp, onRecording: (Boolean) -> Unit) {
             owner, CameraSelector.DEFAULT_BACK_CAMERA,
             UseCaseGroup.Builder().addUseCase(preview).addUseCase(capture).addEffect(effect).build(),
         )
-        live.rotation = cam.cameraInfo.sensorRotationDegrees
+        camInfo = cam.cameraInfo
         vc = capture
     }
 
@@ -351,6 +354,11 @@ fun RecordScreen(bottomInset: Dp, onRecording: (Boolean) -> Unit) {
         val opts = MediaStoreOutputOptions.Builder(
             ctx.contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         ).setContentValues(values).build()
+
+        // Video orientation is fixed at the moment recording starts, like a real body cam.
+        val rot = previewView.display?.rotation ?: Surface.ROTATION_0
+        v.targetRotation = rot
+        live.rotation = camInfo?.getSensorRotationDegrees(rot) ?: 0
 
         track.clear()
         startMs = System.currentTimeMillis()
@@ -411,13 +419,15 @@ fun RecordScreen(bottomInset: Dp, onRecording: (Boolean) -> Unit) {
     }
 }
 
-// Draws the live stamp into every video frame.
-private val timeFmt = SimpleDateFormat("yyyy-MM-dd  HH:mm:ss  XXX", Locale.US)
+// Draws the live stamp into every video frame: top-right, body-cam style.
+private val timeFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US)
+private val deviceTag = "WITNESSCAM " + Build.MODEL.uppercase(Locale.US)
 private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = android.graphics.Color.WHITE
-    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+    typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+    textAlign = Paint.Align.RIGHT
 }
-private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x99000000.toInt() }
+private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x66000000 }
 
 private fun stamp(frame: Frame, live: LiveInfo) {
     val c = frame.overlayCanvas
@@ -426,37 +436,37 @@ private fun stamp(frame: Frame, live: LiveInfo) {
     val w = frame.size.width.toFloat()
     val h = frame.size.height.toFloat()
     val rot = live.rotation
-    val portrait = rot == 90 || rot == 270
-    val ow = if (portrait) h else w   // output width after rotation
-    val oh = if (portrait) w else h
+    val swap = rot == 90 || rot == 270
+    val ow = if (swap) h else w   // output width after rotation
 
     c.save()
     when (rot) {
         90 -> { c.translate(0f, h); c.rotate(-90f) }
+        180 -> { c.translate(w, h); c.rotate(180f) }
         270 -> { c.translate(w, 0f); c.rotate(90f) }
     }
 
     val s = ow / 1080f
     val f = fresh(live.fix)
-    val lines = buildList {
-        add(timeFmt.format(Date()))
-        if (f != null) {
-            add(String.format(Locale.US, "%.6f, %.6f", f.lat, f.lon))
-            add(String.format(Locale.US, "GPS ±%.0f m", f.acc))
-        } else add("No GPS fix")
-    }
+    val lines = listOf(
+        timeFmt.format(Date()),
+        if (f != null) String.format(Locale.US, "%.6f, %.6f  ±%.0f m", f.lat, f.lon, f.acc) else "NO GPS FIX",
+        deviceTag,
+    )
 
-    textPaint.textSize = 32f * s
-    val lineH = 44f * s
-    val pad = 20f * s
+    textPaint.textSize = 28f * s
+    textPaint.setShadowLayer(3f * s, 0f, 1.5f * s, 0xCC000000.toInt())
+    val lineH = 38f * s
+    val pad = 14f * s
+    val margin = 28f * s
     val boxW = lines.maxOf { textPaint.measureText(it) } + pad * 2
     val boxH = lines.size * lineH + pad * 2 - 8f * s
-    val left = 36f * s
-    val bottom = oh - 140f * s
-    val rect = RectF(left, bottom - boxH, left + boxW, bottom)
-    c.drawRoundRect(rect, 16f * s, 16f * s, boxPaint)
+
+    val right = ow - margin
+    val top = margin
+    c.drawRoundRect(RectF(right - boxW, top, right, top + boxH), 10f * s, 10f * s, boxPaint)
     lines.forEachIndexed { i, line ->
-        c.drawText(line, rect.left + pad, rect.top + pad + (i + 1) * lineH - 12f * s, textPaint)
+        c.drawText(line, right - pad, top + pad + (i + 1) * lineH - 12f * s, textPaint)
     }
     c.restore()
 }
